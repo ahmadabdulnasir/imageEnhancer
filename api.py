@@ -11,7 +11,7 @@ from PIL import Image
 from refiners.fluxion.utils import manual_seed
 from refiners.foundationals.latent_diffusion import Solver, solvers
 from pydantic import BaseModel
-
+import gc
 
 from enhancer import ESRGANUpscaler, ESRGANUpscalerCheckpoints
 
@@ -113,6 +113,18 @@ enhancer = ESRGANUpscaler(checkpoints=CHECKPOINTS, device=DEVICE_CPU, dtype=DTYP
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 enhancer.to(device=DEVICE, dtype=DTYPE)
 
+def get_gpu_memory():
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+    return 0
+
+def estimate_memory_usage(image_size, upscale_factor):
+    # Rough estimation of memory usage in GB
+    # This is a conservative estimate based on typical model memory requirements
+    base_memory = 4  # Base memory for model loading
+    image_memory = (image_size[0] * image_size[1] * 3 * 4 * upscale_factor**2) / (1024**3)  # RGB image in float32
+    return base_memory + image_memory
+
 @app.post("/enhance")
 async def enhance_image(
     file: UploadFile = File(...),
@@ -134,11 +146,30 @@ async def enhance_image(
         contents = await file.read()
         input_image = Image.open(io.BytesIO(contents))
         
+        # Check image size and upscale factor
+        image_size = input_image.size
+        estimated_memory = estimate_memory_usage(image_size, upscale_factor)
+        available_memory = get_gpu_memory()
+        
+        if upscale_factor > 2.0:
+            if estimated_memory > available_memory * 0.8:  # Using 80% of available memory as threshold
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Upscale factor {upscale_factor} is too high for this image size. "
+                    f"Estimated memory usage: {estimated_memory:.1f}GB, Available GPU memory: {available_memory:.1f}GB. "
+                    "Try reducing the upscale factor or image size."
+                )
+        
         # Set random seed
         manual_seed(seed)
         
         # Get solver type
         solver_type: type[Solver] = getattr(solvers, solver)
+        
+        # Clear CUDA cache before processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
         
         # Process image
         enhanced_image = enhancer.upscale(
@@ -156,6 +187,11 @@ async def enhance_image(
             solver_type=solver_type,
         )
         
+        # Clear CUDA cache after processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         # Convert enhanced image to bytes
         img_byte_arr = io.BytesIO()
         enhanced_image.save(img_byte_arr, format='PNG')
@@ -169,6 +205,15 @@ async def enhance_image(
             }
         )
         
+    except torch.cuda.OutOfMemoryError:
+        # Clear CUDA cache on OOM error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        raise HTTPException(
+            status_code=400,
+            detail="Out of memory error. Try reducing the upscale factor or image size."
+        )
     except Exception as exp:
         raise HTTPException(status_code=500, detail=str(exp))
 
