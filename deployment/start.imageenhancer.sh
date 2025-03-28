@@ -28,7 +28,7 @@ echo "Starting Image Enhancer API"
 echo "Socket Path: $SOCKET_PATH"
 echo "Working Directory: $SERVICE_DIR"
 echo "Recheck Working Directory: $(pwd)"
-cd src
+
 # Start the FastAPI service using the conda environment's uvicorn
 #python /home/azureuser/imageenhancer/src/api.py
 # Added --timeout 300 for longer running ML tasks
