@@ -1,0 +1,12 @@
+[Unit]
+Description=imageenhancer fastAPI application
+After=network.target
+
+[Service]
+User=azureuser
+WorkingDirectory=/home/azureuser/imageenhancer/src
+ExecStart=/home/azureuser/imageenhancer/start.imageenhancer.sh
+
+
+[Install]
+WantedBy=multi-user.target
