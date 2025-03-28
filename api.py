@@ -4,13 +4,14 @@ import io
 
 import pillow_heif
 import torch
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, Response
 from huggingface_hub import hf_hub_download
 from PIL import Image
 from refiners.fluxion.utils import manual_seed
 from refiners.foundationals.latent_diffusion import Solver, solvers
 from pydantic import BaseModel
+
 
 from enhancer import ESRGANUpscaler, ESRGANUpscalerCheckpoints
 
@@ -20,7 +21,7 @@ pillow_heif.register_avif_opener()
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Finegrain Image Enhancer API",
+    title="Fashable.AI Finegrain Image Enhancer API",
     description="API for enhancing low resolution images into high resolution versions with added generated details",
     version="1.0.0"
 )
@@ -115,7 +116,18 @@ enhancer.to(device=DEVICE, dtype=DTYPE)
 @app.post("/enhance")
 async def enhance_image(
     file: UploadFile = File(...),
-    request: EnhancementRequest = EnhancementRequest()
+    prompt: str = Form("masterpiece, best quality, highres"),
+    negative_prompt: str = Form("worst quality, low quality, normal quality"),
+    seed: int = Form(42),
+    upscale_factor: float = Form(2.0),
+    controlnet_scale: float = Form(0.6),
+    controlnet_decay: float = Form(1.0),
+    condition_scale: int = Form(6),
+    tile_width: int = Form(112),
+    tile_height: int = Form(144),
+    denoise_strength: float = Form(0.35),
+    num_inference_steps: int = Form(18),
+    solver: str = Form("DDIM")
 ):
     try:
         # Read and validate image
@@ -123,23 +135,23 @@ async def enhance_image(
         input_image = Image.open(io.BytesIO(contents))
         
         # Set random seed
-        manual_seed(request.seed)
+        manual_seed(seed)
         
         # Get solver type
-        solver_type: type[Solver] = getattr(solvers, request.solver)
+        solver_type: type[Solver] = getattr(solvers, solver)
         
         # Process image
         enhanced_image = enhancer.upscale(
             image=input_image,
-            prompt=request.prompt,
-            negative_prompt=request.negative_prompt,
-            upscale_factor=request.upscale_factor,
-            controlnet_scale=request.controlnet_scale,
-            controlnet_scale_decay=request.controlnet_decay,
-            condition_scale=request.condition_scale,
-            tile_size=(request.tile_height, request.tile_width),
-            denoise_strength=request.denoise_strength,
-            num_inference_steps=request.num_inference_steps,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            upscale_factor=upscale_factor,
+            controlnet_scale=controlnet_scale,
+            controlnet_scale_decay=controlnet_decay,
+            condition_scale=condition_scale,
+            tile_size=(tile_height, tile_width),
+            denoise_strength=denoise_strength,
+            num_inference_steps=num_inference_steps,
             loras_scale={"more_details": 0.5, "sdxl_render": 1.0},
             solver_type=solver_type,
         )
@@ -157,8 +169,8 @@ async def enhance_image(
             }
         )
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exp:
+        raise HTTPException(status_code=500, detail=str(exp))
 
 @app.get("/")
 async def root():
