@@ -26,10 +26,10 @@ fi
 cd "$SERVICE_DIR"
 
 # Start the FastAPI service using the conda environment's uvicorn
-python /home/azureuser/imageenhancer/src/upscale_api.py
+#python /home/azureuser/imageenhancer/src/api.py
 # Added --timeout 300 for longer running ML tasks
-#python -m uvicorn main:app \
-#    --uds "$SOCKET_PATH" \
+python -m uvicorn src.api:app  \
+   --uds "$SOCKET_PATH" \
 #    --workers $WORKERS
     # --timeout-keep-alive 300 \
     # --log-level info \
