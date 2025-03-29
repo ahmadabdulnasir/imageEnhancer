@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 import io
+import math
 
 import pillow_heif
 import torch
@@ -113,6 +114,9 @@ enhancer = ESRGANUpscaler(checkpoints=CHECKPOINTS, device=DEVICE_CPU, dtype=DTYP
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 enhancer.to(device=DEVICE, dtype=DTYPE)
 
+# Base memory required for model loading (in GB)
+BASE_MEMORY = 4
+
 def get_gpu_memory():
     if torch.cuda.is_available():
         return torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
@@ -121,16 +125,23 @@ def get_gpu_memory():
 def estimate_memory_usage(image_size, upscale_factor):
     # Rough estimation of memory usage in GB
     # This is a conservative estimate based on typical model memory requirements
-    base_memory = 4  # Base memory for model loading
     image_memory = (image_size[0] * image_size[1] * 3 * 4 * upscale_factor**2) / (1024**3)  # RGB image in float32
-    return base_memory + image_memory
+    return BASE_MEMORY + image_memory
+
+def calculate_optimal_tile_size(image_size):
+    # Calculate tile size that's divisible by 8 (model requirement)
+    # and appropriate for the image size
+    width, height = image_size
+    tile_width = min(112, ((width + 7) // 8) * 8)
+    tile_height = min(144, ((height + 7) // 8) * 8)
+    return tile_width, tile_height
 
 @app.post("/enhance")
 async def enhance_image(
     file: UploadFile = File(...),
     prompt: str = Form("masterpiece, best quality, highres"),
     negative_prompt: str = Form("worst quality, low quality, normal quality"),
-    seed: int = Form(42),
+    seed: int = Form(1337),
     upscale_factor: float = Form(2.0),
     controlnet_scale: float = Form(0.6),
     controlnet_decay: float = Form(1.0),
@@ -139,27 +150,40 @@ async def enhance_image(
     tile_height: int = Form(144),
     denoise_strength: float = Form(0.35),
     num_inference_steps: int = Form(18),
-    solver: str = Form("DDIM")
+    solver: str = Form("DDIM", description="The solver to use for the image enhancement. Default is DDIM. (DPMSolver, DDPM, DDIM, Euler, FrankenSolver, LCMSolver, ModelPredictionType, NoiseSchedule, TimestepSpacing )") 
 ):
+    
     try:
         # Read and validate image
         contents = await file.read()
         input_image = Image.open(io.BytesIO(contents))
+        
+        # Calculate optimal tile size based on input image
+        optimal_tile_width, optimal_tile_height = calculate_optimal_tile_size(input_image.size)
+        tile_width = min(tile_width, optimal_tile_width)
+        tile_height = min(tile_height, optimal_tile_height)
         
         # Check image size and upscale factor
         image_size = input_image.size
         estimated_memory = estimate_memory_usage(image_size, upscale_factor)
         available_memory = get_gpu_memory()
         
-        if upscale_factor > 2.0:
-            if estimated_memory > available_memory * 0.8:  # Using 80% of available memory as threshold
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Upscale factor {upscale_factor} is too high for this image size. "
-                    f"Estimated memory usage: {estimated_memory:.1f}GB, Available GPU memory: {available_memory:.1f}GB. "
+        # More conservative memory threshold for larger upscale factors
+        memory_threshold = 0.7 if upscale_factor > 2.0 else 0.8
+        
+        if estimated_memory > available_memory * memory_threshold:
+            # Calculate maximum safe upscale factor
+            max_upscale = math.sqrt((available_memory * memory_threshold - BASE_MEMORY) * (1024**3) / (image_size[0] * image_size[1] * 3 * 4))
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Requested upscale factor {upscale_factor} would exceed available memory. "
+                    f"For this image size ({image_size[0]}x{image_size[1]}), "
+                    f"maximum recommended upscale factor is {min(2.0, max_upscale):.1f}. "
                     "Try reducing the upscale factor or image size."
                 )
-        
+            )
+
         # Set random seed
         manual_seed(seed)
         
@@ -171,7 +195,7 @@ async def enhance_image(
             torch.cuda.empty_cache()
             gc.collect()
         
-        # Process image
+        # Process image with adjusted tile size
         enhanced_image = enhancer.upscale(
             image=input_image,
             prompt=prompt,
@@ -180,7 +204,7 @@ async def enhance_image(
             controlnet_scale=controlnet_scale,
             controlnet_scale_decay=controlnet_decay,
             condition_scale=condition_scale,
-            tile_size=(tile_height, tile_width),
+            tile_size=(tile_height, tile_width),  # Using adjusted tile size
             denoise_strength=denoise_strength,
             num_inference_steps=num_inference_steps,
             loras_scale={"more_details": 0.5, "sdxl_render": 1.0},
@@ -206,15 +230,28 @@ async def enhance_image(
         )
         
     except torch.cuda.OutOfMemoryError:
-        # Clear CUDA cache on OOM error
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
         raise HTTPException(
             status_code=400,
-            detail="Out of memory error. Try reducing the upscale factor or image size."
+            detail=(
+                "Out of memory error. For this image size, try:\n"
+                "1. Reducing the upscale factor to 2.0 or less\n"
+                "2. Reducing the input image size\n"
+                "3. Using smaller tile sizes (try 64x64)"
+            )
         )
-    except Exception as exp:
+    except RuntimeError as exp:
+        if "size of tensor" in str(exp):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Image size incompatible with tile size. Try:\n"
+                    "1. Using smaller tile sizes (multiple of 8)\n"
+                    "2. Resizing the input image to a larger size"
+                )
+            )
         raise HTTPException(status_code=500, detail=str(exp))
 
 @app.get("/")

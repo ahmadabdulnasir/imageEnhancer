@@ -108,6 +108,27 @@ The following parameters can be customized:
 - CUDA-capable GPU (recommended for faster processing)
 - Sufficient RAM (8GB minimum recommended)
 
+## For Better result:
+### Better memory management:
+- More conservative memory threshold for larger upscale factors
+- Calculates maximum safe upscale factor for the image size
+- Clearer error messages with specific recommendations
+### Dynamic tile size adjustment:
+- New calculate_optimal_tile_size function to ensure tile sizes are compatible with the image
+- Automatically adjusts tile sizes to prevent tensor size mismatches
+- Ensures tile sizes are multiples of 8 (model requirement)
+
+### Notes
+#### For large images (>1024x1024):
+- Keep upscale factor ≤ 2.0
+- Use smaller tile sizes (e.g., 64x64)
+#### For small images (<256x256):
+- The API will automatically adjust tile sizes
+Or you can manually set smaller tile sizes that are multiples of 8
+#### For optimal results:
+- Start with upscale_factor = 2.0
+- If you need larger upscaling, consider doing it in multiple steps
+- Use tile sizes that divide evenly into your image dimensions
 
 ## Acknowledgments
 
